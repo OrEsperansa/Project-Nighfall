@@ -40,3 +40,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- $suffix := printf "%s:%s:%s:route" $root.Release.Name $root.Values.auth.tokenSeed $studentName | sha256sum | trunc 12 -}}
 {{- printf "%s-%s" $studentName $suffix -}}
 {{- end }}
+
+{{- define "nightfall.postInstallCheckName" -}}
+{{- printf "%s-post-install-check" (include "nightfall.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end }}

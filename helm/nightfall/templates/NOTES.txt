@@ -11,3 +11,12 @@ Student Swagger URLs:
 Each student has a separate Deployment, Service, Secret, token signing key, and
 pod-local exercise state. No reset endpoint is exposed. Recreating a student pod
 is the instructor-controlled reset mechanism.
+
+{{- if .Values.postInstallCheck.enabled }}
+Post-install check:
+  Status: oc get job/{{ include "nightfall.postInstallCheckName" . }}
+  Logs:   oc logs job/{{ include "nightfall.postInstallCheckName" . }}
+
+A successful check prints one PASS line per Service and Route, followed by:
+  SUMMARY passed=<total> failed=0 total=<total>
+{{- end }}

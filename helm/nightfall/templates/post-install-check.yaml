@@ -1,0 +1,117 @@
+{{- if .Values.postInstallCheck.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nightfall.postInstallCheckName" . }}
+  labels:
+    {{- include "nightfall.labels" . | nindent 4 }}
+    app.kubernetes.io/component: post-install-check
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.postInstallCheck.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.postInstallCheck.logRetentionSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "nightfall.labels" . | nindent 8 }}
+        app.kubernetes.io/component: post-install-check
+    spec:
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: check
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: HOME
+              value: /tmp
+          command:
+            - python
+            - -c
+          args:
+            - |
+              import json
+              import ssl
+              import sys
+              import time
+              import urllib.request
+
+              attempts = {{ .Values.postInstallCheck.attempts }}
+              delay_seconds = {{ .Values.postInstallCheck.delaySeconds }}
+              timeout_seconds = {{ .Values.postInstallCheck.requestTimeoutSeconds }}
+              tls_verify = {{ ternary "True" "False" .Values.postInstallCheck.tlsVerify }}
+              ssl_context = None if tls_verify else ssl._create_unverified_context()
+              targets = [
+              {{- $root := . }}
+              {{- range $index := until (int .Values.studentCount) }}
+              {{- $number := add $index 1 }}
+              {{- $studentName := include "nightfall.studentName" $number }}
+              {{- $resourceName := include "nightfall.studentResourceName" (list $root $number) }}
+                  ("{{ $studentName }} service", "http://{{ $resourceName }}/healthz", "{{ $studentName }}"),
+              {{- if and $root.Values.postInstallCheck.verifyRoutes $root.Values.route.enabled }}
+                  (
+                      "{{ $studentName }} route",
+                      "{{ ternary "https" "http" $root.Values.route.tls.enabled }}://{{ $root.Values.route.host }}{{ $root.Values.routePrefix }}/{{ include "nightfall.studentRouteName" (list $root $number) }}/healthz",
+                      "{{ $studentName }}",
+                  ),
+              {{- end }}
+              {{- end }}
+              ]
+
+              failures = []
+              for label, url, expected_student in targets:
+                  last_error = "not attempted"
+                  for attempt in range(1, attempts + 1):
+                      try:
+                          with urllib.request.urlopen(
+                              url,
+                              timeout=timeout_seconds,
+                              context=ssl_context,
+                          ) as response:
+                              payload = json.load(response)
+                          if payload.get("status") != "ok":
+                              raise RuntimeError(f"unexpected status: {payload!r}")
+                          if payload.get("student_id") != expected_student:
+                              raise RuntimeError(
+                                  f"expected student_id={expected_student!r}, "
+                                  f"received {payload.get('student_id')!r}"
+                              )
+                          print(f"PASS {label}: {url} -> {expected_student}", flush=True)
+                          break
+                      except Exception as exc:
+                          last_error = str(exc)
+                          if attempt < attempts:
+                              time.sleep(delay_seconds)
+                  else:
+                      message = f"FAIL {label}: {url} -> {last_error}"
+                      print(message, flush=True)
+                      failures.append(message)
+
+              passed = len(targets) - len(failures)
+              print(
+                  f"SUMMARY passed={passed} failed={len(failures)} total={len(targets)}",
+                  flush=True,
+              )
+              if failures:
+                  sys.exit(1)
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -74,6 +74,7 @@ restricted security context.
 ```powershell
 helm upgrade --install nightfall .\helm\nightfall `
   --namespace nightfall --create-namespace `
+  --wait --timeout 10m `
   --set studentCount=30 `
   --set image.repository=registry.example.com/training/nightfall-api `
   --set image.tag=1.0.0 `
@@ -98,6 +99,45 @@ https://nightfall.example.edu/students/student-2-<secret-suffix>/docs
 
 The suffix is stable for the same release name and `auth.tokenSeed`, but cannot be
 derived without that seed. Give each student only their assigned URL.
+
+## Understand the Post-Install Check
+
+After every install or upgrade, Helm automatically starts a temporary check Job.
+It calls `/healthz` through every student's internal Service and public OpenShift
+Route, and verifies that each response belongs to the expected student. A failed
+check makes the Helm command fail instead of reporting a successful deployment.
+
+Find the check and read its output:
+
+```powershell
+oc get jobs -n nightfall -l app.kubernetes.io/component=post-install-check
+oc logs -n nightfall job/nightfall-nightfall-post-install-check
+```
+
+A successful Job shows `Complete` in `oc get jobs`. Its logs look like:
+
+```text
+PASS student-1 service: http://nightfall-nightfall-student-1/healthz -> student-1
+PASS student-1 route: https://nightfall.apps.example.edu/students/student-1-<suffix>/healthz -> student-1
+...
+SUMMARY passed=60 failed=0 total=60
+```
+
+With Route checks enabled, `total` should equal `studentCount * 2`: one Service
+check and one Route check per student. `failed=0` confirms that all students are
+isolated and reachable through both paths.
+
+If the Job shows `Failed`, inspect the failing URL and the Job details:
+
+```powershell
+oc logs -n nightfall job/nightfall-nightfall-post-install-check
+oc describe job -n nightfall nightfall-nightfall-post-install-check
+oc get pods,routes -n nightfall
+```
+
+The logs distinguish an internal Service failure from an external Route failure.
+The completed Job and its logs remain available for 24 hours and are replaced by
+the next Helm upgrade.
 
 ## Exercise Reset and Generated Computers
 
@@ -127,5 +167,8 @@ the seed during an active class is not recommended.
 | `dataset.seed` | Shared seed used to generate identical computer data |
 | `dataset.generationIntervalSeconds` | How often a new generated computer appears |
 | `dataset.generatedComputerCount` | Size of the rolling generated-computer window |
+| `postInstallCheck.verifyRoutes` | Also verify every public OpenShift Route |
+| `postInstallCheck.tlsVerify` | Validate the Route TLS certificate |
+| `postInstallCheck.logRetentionSeconds` | How long the completed check and logs remain |
 
 Do not use the default `auth.tokenSeed` outside local testing.

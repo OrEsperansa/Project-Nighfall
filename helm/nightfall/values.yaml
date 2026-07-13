@@ -34,6 +34,16 @@ route:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
 
+postInstallCheck:
+  enabled: true
+  verifyRoutes: true
+  tlsVerify: true
+  attempts: 30
+  delaySeconds: 2
+  requestTimeoutSeconds: 5
+  activeDeadlineSeconds: 300
+  logRetentionSeconds: 86400
+
 resources:
   requests:
     cpu: 50m
