@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["studentCount", "image", "auth", "routePrefix", "dataset", "route"],
+  "properties": {
+    "studentCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": ["username", "password", "tokenTtlSeconds", "tokenSeed"],
+      "properties": {
+        "username": {"type": "string", "minLength": 1},
+        "password": {"type": "string", "minLength": 1},
+        "tokenTtlSeconds": {"type": "integer", "minimum": 60},
+        "tokenSeed": {"type": "string", "minLength": 16}
+      }
+    },
+    "routePrefix": {
+      "type": "string",
+      "pattern": "^/[a-z0-9/-]*[a-z0-9]$"
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["seed", "generationIntervalSeconds", "generatedComputerCount"],
+      "properties": {
+        "seed": {"type": "string", "minLength": 1},
+        "generationIntervalSeconds": {"type": "integer", "minimum": 30},
+        "generatedComputerCount": {"type": "integer", "minimum": 0, "maximum": 100}
+      }
+    },
+    "route": {
+      "type": "object",
+      "required": ["enabled", "host", "tls"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "host": {"type": "string", "minLength": 1},
+        "tls": {
+          "type": "object",
+          "required": ["enabled", "termination", "insecureEdgeTerminationPolicy"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "termination": {"const": "edge"},
+            "insecureEdgeTerminationPolicy": {"enum": ["Allow", "Redirect", "None"]}
+          }
+        }
+      }
+    }
+  }
+}

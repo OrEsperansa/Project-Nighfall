@@ -1,0 +1,13 @@
+NightFall created {{ .Values.studentCount }} isolated student API deployments.
+
+Student Swagger URLs:
+{{- $root := . }}
+{{- range $index := until (int .Values.studentCount) }}
+{{- $number := add $index 1 }}
+{{- $studentName := include "nightfall.studentName" $number }}
+  {{ $studentName }}: {{ ternary "https" "http" $root.Values.route.tls.enabled }}://{{ $root.Values.route.host }}{{ $root.Values.routePrefix }}/{{ include "nightfall.studentRouteName" (list $root $number) }}/docs
+{{- end }}
+
+Each student has a separate Deployment, Service, Secret, token signing key, and
+pod-local exercise state. No reset endpoint is exposed. Recreating a student pod
+is the instructor-controlled reset mechanism.

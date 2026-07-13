@@ -1,0 +1,35 @@
+{{- if .Values.route.enabled }}
+{{- $root := . -}}
+{{- range $index := until (int .Values.studentCount) }}
+{{- $number := add $index 1 }}
+{{- $studentName := include "nightfall.studentName" $number }}
+{{- $resourceName := include "nightfall.studentResourceName" (list $root $number) }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ $resourceName }}
+  labels:
+    {{- include "nightfall.labels" $root | nindent 4 }}
+    nightfall.openai.com/student: {{ $studentName }}
+  {{- with $root.Values.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  host: {{ $root.Values.route.host | quote }}
+  path: {{ printf "%s/%s" ($root.Values.routePrefix | trimSuffix "/") (include "nightfall.studentRouteName" (list $root $number)) | quote }}
+  to:
+    kind: Service
+    name: {{ $resourceName }}
+    weight: 100
+  port:
+    targetPort: http
+  {{- if $root.Values.route.tls.enabled }}
+  tls:
+    termination: {{ $root.Values.route.tls.termination }}
+    insecureEdgeTerminationPolicy: {{ $root.Values.route.tls.insecureEdgeTerminationPolicy }}
+  {{- end }}
+  wildcardPolicy: None
+{{- end }}
+{{- end }}

@@ -1,0 +1,57 @@
+studentCount: 10
+
+image:
+  repository: nightfall-api
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+auth:
+  username: sigitattacker
+  password: LamaLoKapara
+  tokenTtlSeconds: 3600
+  # Change this before deployment. It is used to derive a different signing
+  # key for every student pod, so tokens cannot be reused between routes.
+  tokenSeed: change-this-token-seed
+
+routePrefix: /students
+
+dataset:
+  # The same seed and absolute time bucket produce the same computers in every pod.
+  seed: nightfall-classroom-seed-v1
+  generationIntervalSeconds: 600
+  generatedComputerCount: 6
+
+route:
+  enabled: true
+  host: nightfall.apps.example.com
+  annotations: {}
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+podSecurityContext: {}
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
