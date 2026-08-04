@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -15,12 +15,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import Settings, load_settings
 from .data import (
+    ACTIVITY_EVENTS,
     EVIDENCE_FILE_CONTENTS,
     TARGET_FILES,
     get_computer,
     list_computers as build_computer_list,
 )
 from .models import (
+    ActivityEventPage,
     ComputerDetail,
     ComputerSummary,
     EvidenceDownloadResponse,
@@ -30,6 +32,8 @@ from .models import (
     FileSearchResponse,
     LoginRequest,
     LoginResponse,
+    TransferChunkResponse,
+    TransferManifestResponse,
 )
 from .security import create_access_token, verify_access_token
 from .package_store import PackageStore
@@ -113,6 +117,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return result
 
+    def require_package(computer_id: str, package_id: str) -> dict:
+        require_computer(computer_id)
+        package = package_store.get(package_id, computer_id)
+        if package is None:
+            raise api_error(
+                status.HTTP_404_NOT_FOUND,
+                "PACKAGE_NOT_FOUND",
+                "The requested evidence package does not exist for this computer.",
+            )
+        return package
+
     @app.get("/healthz", tags=["Operations"], include_in_schema=False)
     def healthz() -> dict:
         return {"status": "ok", "student_id": settings.student_id}
@@ -160,11 +175,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         computer, details = require_computer(computer_id)
         return {**computer, **details}
 
+    @app.get(
+        "/computers/{computer_id}/activity-events",
+        response_model=ActivityEventPage,
+        tags=["Evidence"],
+        summary="Read one page of computer activity events",
+        description=(
+            "Returns events in chronological order. Start with cursor=0 and repeat "
+            "using next_cursor. Collection is complete when next_cursor is null."
+        ),
+    )
+    def list_activity_events(
+        computer_id: str,
+        cursor: int = Query(default=0, ge=0, description="Zero-based event offset."),
+        limit: int = Query(default=5, ge=2, le=10, description="Events per page."),
+        _: dict = Depends(require_auth),
+    ) -> ActivityEventPage:
+        require_computer(computer_id)
+        events = ACTIVITY_EVENTS if computer_id == "PC-104" else []
+        page = events[cursor : cursor + limit]
+        next_cursor = cursor + len(page) if cursor + len(page) < len(events) else None
+        return ActivityEventPage(
+            computer_id=computer_id,
+            events=page,
+            next_cursor=next_cursor,
+        )
+
     @app.post(
         "/computers/{computer_id}/file-searches",
         response_model=FileSearchResponse,
         tags=["Evidence"],
         summary="Search one computer and return the results immediately",
+        description=(
+            "Use query NIGHTFALL. The locations array must contain values copied "
+            "from recent_directories in GET /computers/{computer_id}. Results are "
+            "returned immediately; no polling is required."
+        ),
     )
     def search_files(
         computer_id: str,
@@ -209,6 +255,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_code=status.HTTP_201_CREATED,
         tags=["Evidence"],
         summary="Create a ready-to-download evidence package",
+        description=(
+            "Use package_name NIGHTFALL_EVIDENCE and include only file_id values "
+            "whose file-search relevance is HIGH. The package is READY in this response."
+        ),
     )
     def create_evidence_package(
         computer_id: str,
@@ -285,20 +335,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         package_id: str,
         _: dict = Depends(require_auth),
     ) -> EvidenceDownloadResponse:
-        require_computer(computer_id)
-        package = package_store.get(package_id, computer_id)
-        if package is None:
-            raise api_error(
-                status.HTTP_404_NOT_FOUND,
-                "PACKAGE_NOT_FOUND",
-                "The requested evidence package does not exist for this computer.",
-            )
+        package = require_package(computer_id, package_id)
         return EvidenceDownloadResponse(
             package_id=package["package_id"],
             computer_id=package["computer_id"],
             package_name=package["package_name"],
             checksum=package["checksum"],
             data=package["encoded_data"],
+        )
+
+    @app.get(
+        "/computers/{computer_id}/evidence-packages/{package_id}/transfer-manifest",
+        response_model=TransferManifestResponse,
+        tags=["Advanced Evidence"],
+        summary="Get the chunk list for a verified multipart download",
+        description=(
+            "The manifest describes every chunk and the checksum of the fully "
+            "reassembled evidence bytes. Chunk indices are zero-based."
+        ),
+    )
+    def get_transfer_manifest(
+        computer_id: str,
+        package_id: str,
+        _: dict = Depends(require_auth),
+    ) -> TransferManifestResponse:
+        package = require_package(computer_id, package_id)
+        package_bytes = base64.b64decode(package["encoded_data"])
+        chunk_size = 96
+        chunks = [
+            package_bytes[offset : offset + chunk_size]
+            for offset in range(0, len(package_bytes), chunk_size)
+        ]
+        return TransferManifestResponse(
+            package_id=package_id,
+            computer_id=computer_id,
+            chunk_size_bytes=chunk_size,
+            chunk_count=len(chunks),
+            total_size_bytes=len(package_bytes),
+            checksum=package["checksum"],
+            chunks=[
+                {
+                    "chunk_index": index,
+                    "size_bytes": len(chunk),
+                    "checksum": hashlib.sha256(chunk).hexdigest(),
+                }
+                for index, chunk in enumerate(chunks)
+            ],
+        )
+
+    @app.get(
+        "/computers/{computer_id}/evidence-packages/{package_id}/chunks/{chunk_index}",
+        response_model=TransferChunkResponse,
+        tags=["Advanced Evidence"],
+        summary="Download one evidence-package chunk",
+        description=(
+            "Base64-decode data, verify the chunk checksum, and concatenate decoded "
+            "chunks in ascending chunk_index order."
+        ),
+    )
+    def download_transfer_chunk(
+        computer_id: str,
+        package_id: str,
+        chunk_index: int = Path(ge=0, description="Zero-based chunk index."),
+        _: dict = Depends(require_auth),
+    ) -> TransferChunkResponse:
+        package = require_package(computer_id, package_id)
+        package_bytes = base64.b64decode(package["encoded_data"])
+        chunk_size = 96
+        chunks = [
+            package_bytes[offset : offset + chunk_size]
+            for offset in range(0, len(package_bytes), chunk_size)
+        ]
+        if chunk_index >= len(chunks):
+            raise api_error(
+                status.HTTP_404_NOT_FOUND,
+                "CHUNK_NOT_FOUND",
+                "The requested chunk index is not present in the transfer manifest.",
+            )
+        chunk = chunks[chunk_index]
+        return TransferChunkResponse(
+            package_id=package_id,
+            computer_id=computer_id,
+            chunk_index=chunk_index,
+            checksum=hashlib.sha256(chunk).hexdigest(),
+            data=base64.b64encode(chunk).decode("ascii"),
         )
 
     return app

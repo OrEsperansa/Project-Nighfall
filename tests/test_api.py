@@ -123,6 +123,80 @@ def test_complete_evidence_flow(authorized_client: TestClient):
     assert evidence["status"] == "EVIDENCE_RECOVERED"
 
 
+def test_activity_events_are_paginated_until_next_cursor_is_null(
+    authorized_client: TestClient,
+):
+    cursor = 0
+    events = []
+    while cursor is not None:
+        response = authorized_client.get(
+            "/computers/PC-104/activity-events",
+            params={"cursor": cursor, "limit": 5},
+        )
+        assert response.status_code == 200
+        page = response.json()
+        events.extend(page["events"])
+        cursor = page["next_cursor"]
+
+    assert len(events) == 32
+    suspicious = [event for event in events if event["session_id"] == "SESSION-NF9"]
+    assert {event["event_type"] for event in suspicious} == {
+        "LOGIN",
+        "PROCESS_START",
+        "FILE_OPEN",
+        "ARCHIVE_CREATE",
+        "NETWORK_CONNECTION",
+        "LOGOUT",
+    }
+
+
+def test_activity_events_validate_page_parameters_and_non_target_is_empty(
+    authorized_client: TestClient,
+):
+    invalid = authorized_client.get(
+        "/computers/PC-104/activity-events", params={"cursor": -1, "limit": 1}
+    )
+    assert invalid.status_code == 422
+
+    empty = authorized_client.get("/computers/PC-208/activity-events").json()
+    assert empty == {"computer_id": "PC-208", "events": [], "next_cursor": None}
+
+
+def test_chunked_transfer_reassembles_and_verifies_package(
+    authorized_client: TestClient,
+):
+    package = authorized_client.post(
+        "/computers/PC-104/evidence-packages",
+        json={
+            "package_name": "NIGHTFALL_EVIDENCE",
+            "file_ids": ["FILE-781", "FILE-992"],
+        },
+    ).json()
+    base = f"/computers/PC-104/evidence-packages/{package['package_id']}"
+    manifest_response = authorized_client.get(f"{base}/transfer-manifest")
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    assert manifest["chunk_count"] == len(manifest["chunks"])
+
+    decoded_chunks = []
+    for expected in reversed(manifest["chunks"]):
+        response = authorized_client.get(f"{base}/chunks/{expected['chunk_index']}")
+        assert response.status_code == 200
+        chunk = response.json()
+        decoded = base64.b64decode(chunk["data"])
+        assert hashlib.sha256(decoded).hexdigest() == expected["checksum"]
+        decoded_chunks.append((chunk["chunk_index"], decoded))
+
+    reassembled = b"".join(data for _, data in sorted(decoded_chunks))
+    assert len(reassembled) == manifest["total_size_bytes"]
+    assert hashlib.sha256(reassembled).hexdigest() == manifest["checksum"]
+    assert json.loads(reassembled)["case"] == "NIGHTFALL"
+
+    missing = authorized_client.get(f"{base}/chunks/{manifest['chunk_count']}")
+    assert missing.status_code == 404
+    assert missing.json()["error"] == "CHUNK_NOT_FOUND"
+
+
 def test_package_rejects_low_relevance_file(authorized_client: TestClient):
     response = authorized_client.post(
         "/computers/PC-104/evidence-packages",
@@ -144,16 +218,31 @@ def test_package_is_not_visible_under_another_computer(authorized_client: TestCl
 
 
 def test_openapi_exposes_only_the_synchronous_exercise_flow(client: TestClient):
-    paths = set(client.get("/openapi.json").json()["paths"])
+    schema = client.get("/openapi.json").json()
+    paths = set(schema["paths"])
     assert paths == {
         "/auth/login",
         "/computers",
         "/computers/{computer_id}",
+        "/computers/{computer_id}/activity-events",
         "/computers/{computer_id}/file-searches",
         "/computers/{computer_id}/evidence-packages",
         "/computers/{computer_id}/evidence-packages/{package_id}/download",
+        "/computers/{computer_id}/evidence-packages/{package_id}/transfer-manifest",
+        "/computers/{computer_id}/evidence-packages/{package_id}/chunks/{chunk_index}",
     }
     assert not any("reset" in path or "status" in path for path in paths)
+    assert schema["components"]["schemas"]["FileSearchRequest"]["example"] == {
+        "query": "NIGHTFALL",
+        "locations": [
+            r"C:\Users\field_operator\Documents",
+            r"C:\Operations\Archive",
+        ],
+    }
+    assert schema["components"]["schemas"]["EvidencePackageRequest"]["example"] == {
+        "package_name": "NIGHTFALL_EVIDENCE",
+        "file_ids": ["FILE-781", "FILE-992"],
+    }
 
 
 def test_seeded_computers_are_unified_and_change_with_time():

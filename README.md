@@ -11,11 +11,39 @@ verify the downloaded evidence. The API never connects to a real computer.
 | `POST` | `/auth/login` | Obtain a bearer token |
 | `GET` | `/computers` | List general computer data |
 | `GET` | `/computers/{computer_id}` | Inspect one computer in detail |
+| `GET` | `/computers/{computer_id}/activity-events` | Read one page of activity events (advanced) |
 | `POST` | `/computers/{computer_id}/file-searches` | Search synchronously |
 | `POST` | `/computers/{computer_id}/evidence-packages` | Create a ready package |
 | `GET` | `/computers/{computer_id}/evidence-packages/{package_id}/download` | Download Base64 data and SHA-256 |
+| `GET` | `/computers/{computer_id}/evidence-packages/{package_id}/transfer-manifest` | Describe a chunked transfer (advanced) |
+| `GET` | `/computers/{computer_id}/evidence-packages/{package_id}/chunks/{chunk_index}` | Download one verified chunk (advanced) |
 
-There are no polling, reset, session, collector, or transfer-channel endpoints.
+There are no polling, reset, session, or collector endpoints.
+
+## Advanced Exercise Flow
+
+The advanced parts deliberately add implementation work without hiding the API
+contract. To collect the activity timeline, start with:
+
+```http
+GET /computers/PC-104/activity-events?cursor=0&limit=5
+Authorization: Bearer <token>
+```
+
+Read `events`, then repeat the request with `cursor` set to `next_cursor`. Stop
+when `next_cursor` is `null`.
+
+After creating an evidence package, request its transfer manifest:
+
+```http
+GET /computers/PC-104/evidence-packages/<package_id>/transfer-manifest
+Authorization: Bearer <token>
+```
+
+Download every zero-based `chunk_index` listed by the manifest. Base64-decode and
+verify each chunk, sort decoded chunks by index, concatenate them, and finally
+verify the manifest's checksum over the complete byte sequence. The original
+single-response `/download` endpoint remains available for Parts 1-6.
 
 Default exercise credentials:
 
@@ -42,6 +70,20 @@ python -m pytest
 ```
 
 ## Container Image
+
+The repository includes the prebuilt image as one Git LFS file:
+`nightfall-api-image.tar`. Load it without rebuilding:
+
+```powershell
+docker load --input .\nightfall-api-image.tar
+docker run --rm -p 8000:8000 nightfall-api:latest
+```
+
+Archive SHA-256:
+
+```text
+ab2874573cde8bd1976941aacbf63a66a9f22e1353d1b465f053259a7fe86d7f
+```
 
 ```powershell
 docker build -t registry.example.com/training/nightfall-api:1.0.0 .
